@@ -102,6 +102,7 @@ func keepOrder() {
 func influxWorker() {
 	for abstractSerie := range influxSeries {
 		influxPoints := make([][]interface{}, len(abstractSerie.Points), len(abstractSerie.Points))
+		// TODO: if there are no points, we can just break out
 		for i, abstractPoint := range abstractSerie.Points {
 			influxPoint := make([]interface{}, 3, 3)
 			influxPoint[0] = abstractPoint.Timestamp
