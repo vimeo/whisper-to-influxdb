@@ -20,6 +20,8 @@ var from, until uint
 var fromTime, untilTime uint32
 var influxWorkersWg, whisperWorkersWg sync.WaitGroup
 var whisperFiles chan string
+var foundFiles chan string
+var finishedFiles chan string
 var influxSeries chan *abstractSerie
 
 var influxHost, influxUser, influxPass, influxDb string
@@ -38,9 +40,63 @@ var include, exclude string
 var verbose bool
 
 var statsInterval uint
+var exit chan int
 
 func seriesString(s *client.Series) string {
 	return fmt.Sprintf("InfluxDB series '%s' (%d points)", s.Name, len(s.Points))
+}
+
+// needed to keep track of what's the next file in line that needs processing
+// because the workers can finish out of order, relative to the order
+// of the filesystem walk which uses inode order.
+// this ensures if you use skipUntil, it resumes from the right pos, without forgetting any
+// other files that also needed processing.
+func keepOrder() {
+	type inProgress struct {
+		Path string
+		Next *inProgress
+	}
+	var firstInProgress *inProgress
+	// we keep a list, the InProgress list, like so : A-B-C-D-E-F
+	// the order of that list, is the inode/filesystem order
+
+	for {
+		select {
+		case found := <-foundFiles:
+			// add item to end of linked list
+			i := &inProgress{
+				Path: found,
+			}
+			if firstInProgress == nil {
+				firstInProgress = i
+			} else {
+				var cur *inProgress
+				for cur = firstInProgress; cur != nil; cur = cur.Next {
+				}
+				cur.Next = i
+			}
+		case finished := <-finishedFiles:
+			// firstInProgress will always be non-nil, because the file must have been added before it finished
+			// in the list above,
+			// when B completes, strip it out of the list (link to A to C)
+			// when A completes, delete A, update first to point to B
+			var prev *inProgress
+			for cur := firstInProgress; cur != nil; cur = cur.Next {
+				if cur.Path == finished {
+					if prev != nil {
+						prev.Next = cur.Next
+					} else {
+						firstInProgress = cur.Next
+					}
+					break
+				}
+				prev = cur
+			}
+		case code := <-exit:
+			fmt.Println("the next file that needed processing was", firstInProgress.Path, "you can resume from there")
+			os.Exit(code)
+		}
+	}
 }
 
 func influxWorker() {
@@ -54,8 +110,10 @@ func influxWorker() {
 
 			influxPoints[i] = influxPoint
 		}
+		basename := strings.TrimSuffix(abstractSerie.Path[len(whisperDir):], ".wsp")
+		name := strings.Replace(basename, "/", ".", -1)
 		influxSerie := client.Series{
-			Name:    influxPrefix + abstractSerie.Name,
+			Name:    influxPrefix + name,
 			Columns: []string{"time", "sequence_number", "value"},
 			Points:  influxPoints,
 		}
@@ -64,7 +122,8 @@ func influxWorker() {
 		err := influxClient.WriteSeriesWithTimePrecision(toCommit, client.Second)
 		duration := time.Since(pre)
 		if err != nil {
-			log.Fatalf("Failed to write %s\n%s\nOperation took %v\n", seriesString(&influxSerie), err.Error(), duration)
+			fmt.Fprintf(os.Stderr, "Failed to write %s: %s (operation took %v)\n", seriesString(&influxSerie), err.Error(), duration)
+			exit <- 2
 		}
 		if verbose {
 			fmt.Println("committed", seriesString(&influxSerie))
@@ -76,7 +135,7 @@ func influxWorker() {
 }
 
 type abstractSerie struct {
-	Name   string
+	Path   string // used to keep track of ordering of processing
 	Points []whisper.Point
 }
 
@@ -84,25 +143,23 @@ func whisperWorker() {
 	for path := range whisperFiles {
 		fd, err := os.Open(path)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s'\n%s\n", path, err.Error())
+			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
 			continue
 		}
 		w, err := whisper.OpenWhisper(fd)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s'\n%s\n", path, err.Error())
+			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
 			continue
 		}
 		pre := time.Now()
 		_, points, err := w.FetchUntil(fromTime, untilTime)
 		duration := time.Since(pre)
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: Failed to read file '%s' from %d to %d, skipping\n%s\nOperation took %v\n", path, fromTime, untilTime, err.Error(), duration)
+			fmt.Fprintf(os.Stderr, "ERROR: Failed to read file '%s' from %d to %d, skipping: %s (operation took %v)\n", path, fromTime, untilTime, err.Error(), duration)
 			continue
 		}
 		whisperReadTimer.Update(duration)
-		basename := strings.TrimSuffix(path[len(whisperDir):], ".wsp")
-		name := strings.Replace(basename, "/", ".", -1)
-		serie := &abstractSerie{name, points}
+		serie := &abstractSerie{path, points}
 		influxSeries <- serie
 	}
 	whisperWorkersWg.Done()
@@ -133,6 +190,7 @@ func process(path string, info os.FileInfo, err error) error {
 		return nil
 	}
 
+	finishedFiles <- path
 	whisperFiles <- path
 	return nil
 }
@@ -140,6 +198,9 @@ func process(path string, info os.FileInfo, err error) error {
 func init() {
 	whisperFiles = make(chan string)
 	influxSeries = make(chan *abstractSerie)
+	foundFiles = make(chan string)
+	finishedFiles = make(chan string)
+	exit = make(chan int)
 
 	whisperReadTimer = metrics.NewTimer()
 	influxWriteTimer = metrics.NewTimer()
@@ -197,9 +258,12 @@ func main() {
 		go whisperWorker()
 	}
 
+	go keepOrder()
+
 	err = filepath.Walk(whisperDir, process)
 	if err != nil {
-		log.Fatal(err.Error())
+		fmt.Fprintln(os.Stderr, err.Error())
+		exit <- 2
 	}
 	if verbose {
 		fmt.Println("fileWalk is done. closing channel")
