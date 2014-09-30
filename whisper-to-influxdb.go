@@ -227,7 +227,7 @@ func main() {
 	flag.StringVar(&influxPass, "influxPass", "graphite", "influxdb pass")
 	flag.StringVar(&influxDb, "influxDb", "graphite", "influxdb database")
 	flag.StringVar(&skipUntil, "skipUntil", "", "absolute path of a whisper file from which to resume processing")
-	flag.StringVar(&influxPrefix, "influxPrefix", "whisper_import.", "prefix this string to all imported data")
+	flag.StringVar(&influxPrefix, "influxPrefix", "", "prefix this string to all imported data")
 	flag.StringVar(&include, "include", "", "only process whisper files whose filename contains this string (\"\" is a no-op, and matches everything")
 	flag.StringVar(&exclude, "exclude", "", "don't process whisper files whose filename contains this string (\"\" disables the filter, and matches nothing")
 	flag.BoolVar(&verbose, "verbose", false, "verbose output")

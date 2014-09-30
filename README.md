@@ -18,7 +18,7 @@ usage of whisper-to-influxdb:
   -influxHost="localhost": influxdb host
   -influxPass="graphite": influxdb pass
   -influxPort=8086: influxdb port
-  -influxPrefix="whisper_import.": prefix this string to all imported data
+  -influxPrefix="": prefix this string to all imported data
   -influxUser="graphite": influxdb user
   -skipUntil="": absolute path of a whisper file from which to resume processing
   -statsInterval=10: interval to display stats. by default 10 seconds.
