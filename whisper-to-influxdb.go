@@ -71,7 +71,7 @@ func keepOrder() {
 				firstInProgress = i
 			} else {
 				var cur *inProgress
-				for cur = firstInProgress; cur != nil; cur = cur.Next {
+				for cur = firstInProgress; cur.Next != nil; cur = cur.Next {
 				}
 				cur.Next = i
 			}
@@ -93,7 +93,9 @@ func keepOrder() {
 				prev = cur
 			}
 		case code := <-exit:
-			fmt.Println("the next file that needed processing was", firstInProgress.Path, "you can resume from there")
+			if firstInProgress != nil {
+				fmt.Println("the next file that needed processing was", firstInProgress.Path, "you can resume from there")
+			}
 			os.Exit(code)
 		}
 	}
@@ -130,6 +132,7 @@ func influxWorker() {
 			fmt.Println("committed", seriesString(&influxSerie))
 		}
 		influxWriteTimer.Update(duration)
+		finishedFiles <- abstractSerie.Path
 
 	}
 	influxWorkersWg.Done()
@@ -191,7 +194,7 @@ func process(path string, info os.FileInfo, err error) error {
 		return nil
 	}
 
-	finishedFiles <- path
+	foundFiles <- path
 	whisperFiles <- path
 	return nil
 }
@@ -279,4 +282,7 @@ func main() {
 		fmt.Println("waiting for influxworkers to finish")
 	}
 	influxWorkersWg.Wait()
+	if verbose {
+		fmt.Println("all done. exiting")
+	}
 }
