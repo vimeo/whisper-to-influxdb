@@ -251,7 +251,7 @@ func main() {
 	}
 
 	// i wish there was a way to enforce that logs gets displayed right before we quit
-	go metrics.LogCompact(metrics.DefaultRegistry, time.Duration(statsInterval)*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
+	go metrics.Log(metrics.DefaultRegistry, time.Duration(statsInterval)*time.Second, log.New(os.Stderr, "metrics: ", log.Lmicroseconds))
 
 	for i := 1; i <= influxWorkers; i++ {
 		influxWorkersWg.Add(1)
