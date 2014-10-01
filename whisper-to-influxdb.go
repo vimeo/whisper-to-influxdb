@@ -38,6 +38,7 @@ var skipCounter uint64
 var influxPrefix string
 var include, exclude string
 var verbose bool
+var all bool
 
 var statsInterval uint
 var exit chan int
@@ -156,12 +157,42 @@ func whisperWorker() {
 			continue
 		}
 		pre := time.Now()
-		_, points, err := w.FetchUntil(fromTime, untilTime)
-		duration := time.Since(pre)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "ERROR: Failed to read file '%s' from %d to %d, skipping: %s (operation took %v)\n", path, fromTime, untilTime, err.Error(), duration)
-			continue
+
+		var duration time.Duration
+		var points []whisper.Point
+		if all {
+			numTotalPoints := uint32(0)
+			for i := range w.Header.Archives {
+				numTotalPoints += w.Header.Archives[i].Points
+			}
+			points = make([]whisper.Point, 0, numTotalPoints)
+			// iterate in backwards archive order (low res to high res)
+			// so that if you write points of multiple archives to the same series, the high res ones will overwrite the low res ones
+			for i := len(w.Header.Archives) - 1; i >= 0; i-- {
+				allPoints, err := w.DumpArchive(i)
+				if err != nil {
+					fmt.Fprintf(os.Stderr, "ERROR: Failed to read archive %d in '%s', skipping: %s\n", i, path, err.Error())
+					continue
+				}
+				for _, point := range allPoints {
+					// we have to filter out the "None" records (where we didn't fill in data) explicitly here!
+					if point.Timestamp != 0 {
+						points = append(points, point)
+					}
+				}
+			}
+			duration = time.Since(pre)
+		} else {
+			// not sure how it works, but i've emperically verified that this ignores null records, which is what we want
+			// i.e. if whisper has a slot every minute, but you only have data every 3 minutes, we'll only process those records
+			_, points, err = w.FetchUntil(fromTime, untilTime)
+			duration = time.Since(pre)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "ERROR: Failed to read file '%s' from %d to %d, skipping: %s (operation took %v)\n", path, fromTime, untilTime, err.Error(), duration)
+				continue
+			}
 		}
+
 		whisperReadTimer.Update(duration)
 		serie := &abstractSerie{path, points}
 		influxSeries <- serie
@@ -219,8 +250,8 @@ func main() {
 	flag.StringVar(&whisperDir, "whisperDir", "/opt/graphite/storage/whisper/", "location where all whisper files are stored")
 	flag.IntVar(&influxWorkers, "influxWorkers", 10, "specify how many influx workers")
 	flag.IntVar(&whisperWorkers, "whisperWorkers", 10, "specify how many whisper workers")
-	flag.UintVar(&from, "from", yesterday, "Unix epoch time of the beginning of the requested interval. (default: 24 hours ago)")
-	flag.UintVar(&until, "until", now, "Unix epoch time of the end of the requested interval. (default: now)")
+	flag.UintVar(&from, "from", yesterday, "Unix epoch time of the beginning of the requested interval. (default: 24 hours ago). ignored if all=true")
+	flag.UintVar(&until, "until", now, "Unix epoch time of the end of the requested interval. (default: now). ignored if all=true")
 	flag.StringVar(&influxHost, "influxHost", "localhost", "influxdb host")
 	flag.UintVar(&influxPort, "influxPort", 8086, "influxdb port")
 	flag.StringVar(&influxUser, "influxUser", "graphite", "influxdb user")
@@ -231,6 +262,7 @@ func main() {
 	flag.StringVar(&include, "include", "", "only process whisper files whose filename contains this string (\"\" is a no-op, and matches everything")
 	flag.StringVar(&exclude, "exclude", "", "don't process whisper files whose filename contains this string (\"\" disables the filter, and matches nothing")
 	flag.BoolVar(&verbose, "verbose", false, "verbose output")
+	flag.BoolVar(&all, "all", false, "copy all data from all archives, as opposed to just querying the timerange from the best archive")
 	flag.UintVar(&statsInterval, "statsInterval", 10, "interval to display stats. by default 10 seconds.")
 
 	flag.Parse()
