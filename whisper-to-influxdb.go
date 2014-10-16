@@ -39,6 +39,8 @@ var influxPrefix string
 var include, exclude string
 var verbose bool
 var all bool
+var skipInfluxErrors bool
+var skipWhisperErrors bool
 
 var statsInterval uint
 var exit chan int
@@ -123,17 +125,26 @@ func influxWorker() {
 		}
 		pre := time.Now()
 		toCommit := []*client.Series{&influxSerie}
-		err := influxClient.WriteSeriesWithTimePrecision(toCommit, client.Second)
-		duration := time.Since(pre)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "Failed to write %s: %s (operation took %v)\n", seriesString(&influxSerie), err.Error(), duration)
-			exit <- 2
+		for {
+			err := influxClient.WriteSeriesWithTimePrecision(toCommit, client.Second)
+			duration := time.Since(pre)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "Failed to write %s: %s (operation took %v)\n", seriesString(&influxSerie), err.Error(), duration)
+				if skipInfluxErrors {
+					time.Sleep(time.Duration(5) * time.Second) // give InfluxDB to recover
+					continue
+				} else {
+					exit <- 2
+					time.Sleep(time.Duration(100) * time.Second) // give other things chance to complete, and program to exit, without printing "committed"
+				}
+			}
+			if verbose {
+				fmt.Println("committed", seriesString(&influxSerie))
+			}
+			influxWriteTimer.Update(duration)
+			finishedFiles <- abstractSerie.Path
+			break
 		}
-		if verbose {
-			fmt.Println("committed", seriesString(&influxSerie))
-		}
-		influxWriteTimer.Update(duration)
-		finishedFiles <- abstractSerie.Path
 
 	}
 	influxWorkersWg.Done()
@@ -149,12 +160,20 @@ func whisperWorker() {
 		fd, err := os.Open(path)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
-			continue
+			if skipWhisperErrors {
+				continue
+			} else {
+				exit <- 2
+			}
 		}
 		w, err := whisper.OpenWhisper(fd)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
-			continue
+			if skipWhisperErrors {
+				continue
+			} else {
+				exit <- 2
+			}
 		}
 		pre := time.Now()
 
@@ -172,7 +191,11 @@ func whisperWorker() {
 				allPoints, err := w.DumpArchive(i)
 				if err != nil {
 					fmt.Fprintf(os.Stderr, "ERROR: Failed to read archive %d in '%s', skipping: %s\n", i, path, err.Error())
-					continue
+					if skipWhisperErrors {
+						continue
+					} else {
+						exit <- 2
+					}
 				}
 				for _, point := range allPoints {
 					// we have to filter out the "None" records (where we didn't fill in data) explicitly here!
@@ -189,9 +212,16 @@ func whisperWorker() {
 			duration = time.Since(pre)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "ERROR: Failed to read file '%s' from %d to %d, skipping: %s (operation took %v)\n", path, fromTime, untilTime, err.Error(), duration)
-				continue
+				if skipWhisperErrors {
+					w.Close()
+					continue
+				} else {
+					exit <- 2
+				}
 			}
 		}
+
+		w.Close()
 
 		whisperReadTimer.Update(duration)
 		serie := &abstractSerie{path, points}
@@ -263,6 +293,8 @@ func main() {
 	flag.StringVar(&exclude, "exclude", "", "don't process whisper files whose filename contains this string (\"\" disables the filter, and matches nothing")
 	flag.BoolVar(&verbose, "verbose", false, "verbose output")
 	flag.BoolVar(&all, "all", false, "copy all data from all archives, as opposed to just querying the timerange from the best archive")
+	flag.BoolVar(&skipInfluxErrors, "skipInfluxErrors", false, "when an influxdb write fails, skip to the next one istead of failing")
+	flag.BoolVar(&skipWhisperErrors, "skipWhisperErrors", false, "when a whisper read fails, skip to the next one instead of failing")
 	flag.UintVar(&statsInterval, "statsInterval", 10, "interval to display stats. by default 10 seconds.")
 
 	flag.Parse()
