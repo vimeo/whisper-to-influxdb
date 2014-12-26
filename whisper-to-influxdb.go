@@ -161,6 +161,7 @@ func whisperWorker() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
 			if skipWhisperErrors {
+				finishedFiles <- path
 				continue
 			} else {
 				exit <- 2
