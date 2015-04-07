@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-var whisperDir string
+var whisperDir string // will contain whisper directory, with no / at the end
 var influxWorkers, whisperWorkers int
 var from, until uint
 var fromTime, untilTime uint32
@@ -116,7 +116,7 @@ func influxWorker() {
 
 			influxPoints[i] = influxPoint
 		}
-		basename := strings.TrimSuffix(abstractSerie.Path[len(whisperDir):], ".wsp")
+		basename := strings.TrimSuffix(abstractSerie.Path[len(whisperDir)+1:], ".wsp")
 		name := strings.Replace(basename, "/", ".", -1)
 		influxSerie := client.Series{
 			Name:    influxPrefix + name,
@@ -298,6 +298,10 @@ func main() {
 	flag.UintVar(&statsInterval, "statsInterval", 10, "interval to display stats. by default 10 seconds.")
 
 	flag.Parse()
+
+	if strings.HasSuffix(whisperDir, "/") {
+		whisperDir = whisperDir[:len(whisperDir)-1]
+	}
 	fromTime = uint32(from)
 	untilTime = uint32(until)
 
