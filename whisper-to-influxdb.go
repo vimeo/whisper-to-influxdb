@@ -132,7 +132,7 @@ func influxWorker() {
 				fmt.Fprintf(os.Stderr, "Failed to write %s: %s (operation took %v)\n", seriesString(&influxSerie), err.Error(), duration)
 				if skipInfluxErrors {
 					time.Sleep(time.Duration(5) * time.Second) // give InfluxDB to recover
-					continue
+					break
 				} else {
 					exit <- 2
 					time.Sleep(time.Duration(100) * time.Second) // give other things chance to complete, and program to exit, without printing "committed"
@@ -161,6 +161,7 @@ func whisperWorker() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
 			if skipWhisperErrors {
+				finishedFiles <- path
 				continue
 			} else {
 				exit <- 2
@@ -170,6 +171,7 @@ func whisperWorker() {
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ERROR: Failed to open whisper file '%s': %s\n", path, err.Error())
 			if skipWhisperErrors {
+				finishedFiles <- path
 				continue
 			} else {
 				exit <- 2
